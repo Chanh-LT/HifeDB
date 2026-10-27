@@ -6,6 +6,7 @@ import lmdb
 
 from storage.keys import generate_id, make_doc_key
 from storage.serializer import deserialize_doc, serialize_doc
+from storage.index import IndexManager
 
 
 class Collection:
