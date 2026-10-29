@@ -1,0 +1,143 @@
+version: "3.8"
+
+networks:
+  db-cluster-net:
+    driver: bridge
+
+volumes:
+  minio_data:
+  shard1_data:
+  shard2_data:
+
+services:
+  # ============================================================================
+  # 1. CLOUD OBJECT STORAGE (MinIO - S3 Compatible)
+  # ============================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: minio-s3
+    restart: unless-stopped
+    ports:
+      - "9000:9000"  # S3 API
+      - "9001:9001"  # Web Console UI
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - db-cluster-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Tạo tự động Bucket lưu snapshot ngay sau khi MinIO online
+  create-bucket:
+    image: minio/mc:latest
+    container_name: minio-init-bucket
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - db-cluster-net
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb --ignore-existing myminio/database-backups;
+      exit 0;
+      "
+
+  # ============================================================================
+  # 2. SHARD NODES (Storage Workers)
+  # ============================================================================
+  shard-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shard-1
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      NODE_ID: "shard-1"
+      HOST: "0.0.0.0"
+      PORT: "8001"
+      DB_PATH: "/app/data/shard1_db"
+      S3_ENDPOINT: "http://minio:9000"
+      S3_ACCESS_KEY: "minioadmin"
+      S3_SECRET_KEY: "minioadmin"
+      S3_BUCKET: "database-backups"
+      BACKUP_INTERVAL: "300"  # Tự động backup mỗi 5 phút (300s)
+    volumes:
+      - shard1_data:/app/data/shard1_db
+    command: python -m shard.server
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - db-cluster-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  shard-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shard-2
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      NODE_ID: "shard-2"
+      HOST: "0.0.0.0"
+      PORT: "8002"
+      DB_PATH: "/app/data/shard2_db"
+      S3_ENDPOINT: "http://minio:9000"
+      S3_ACCESS_KEY: "minioadmin"
+      S3_SECRET_KEY: "minioadmin"
+      S3_BUCKET: "database-backups"
+      BACKUP_INTERVAL: "300"
+    volumes:
+      - shard2_data:/app/data/shard2_db
+    command: python -m shard.server
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - db-cluster-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ============================================================================
+  # 3. ROUTER NODE (Stateless Gateway)
+  # ============================================================================
+  router:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: router-gateway
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      ROUTER_HOST: "0.0.0.0"
+      ROUTER_PORT: "8000"
+      # Trỏ tới các Shard qua tên container trong mạng Docker
+      SHARD_NODES: "http://shard-1:8001,http://shard-2:8002"
+    command: python -m router.server
+    depends_on:
+      shard-1:
+        condition: service_healthy
+      shard-2:
+        condition: service_healthy
+    networks:
+      - db-cluster-net

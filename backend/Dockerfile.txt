@@ -1,0 +1,25 @@
+# Dockerfile
+FROM python:3.11-slim
+
+# Thiết lập biến môi trường tránh sinh file .pyc và buffer log
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Cài đặt các thư viện hệ thống cần thiết để biên dịch lmdb nếu có
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Sao chép và cài đặt dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Sao chép toàn bộ mã nguồn vào container
+COPY . .
+
+# Mặc định lắng nghe cổng (sẽ được override theo service trong docker-compose)
+EXPOSE 8000
