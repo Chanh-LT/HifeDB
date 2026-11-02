@@ -141,3 +141,20 @@ services:
         condition: service_healthy
     networks:
       - db-cluster-net
+
+  # ============================================================================
+  # 4. WEB DASHBOARD (Frontend React + Nginx Reverse Proxy)
+  # ============================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: hifedb-dashboard
+    restart: unless-stopped
+    ports:
+      - "80:80"       # Web Dashboard trực tiếp tại cổng 80 (hoặc truy cập qua domain)
+      - "5173:80"     # Cổng phụ tương thích với cổng dev
+    depends_on:
+      - router
+    networks:
+      - db-cluster-net

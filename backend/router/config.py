@@ -11,7 +11,7 @@ class RouterSettings(BaseSettings):
     # Chuỗi URL các shard phân cách bởi dấu phẩy
     raw_shards: str = os.getenv(
         "SHARD_NODES", 
-        "http://localhost:8001,http://localhost:8002,http://localhost:8003"
+        "http://localhost:8001,http://localhost:8002"
     )
     vnodes_per_shard: int = 150
 
@@ -21,6 +21,7 @@ class RouterSettings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 
 settings = RouterSettings()

@@ -1,10 +1,10 @@
 # shard/server.py
 from contextlib import asynccontextmanager
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from shard.config import settings
@@ -17,8 +17,8 @@ from shard.schemas import (
     UpdateDocRequest,
 )
 from storage.engine import StorageEngine
+from storage.query import QueryEngine
 
-# Biến toàn cục giữ instance StorageEngine cho Shard Node
 engine: StorageEngine = None
 
 
@@ -26,28 +26,36 @@ engine: StorageEngine = None
 async def lifespan(app: FastAPI):
     """Quản lý vòng đời khởi tạo và đóng an toàn của StorageEngine."""
     global engine
-    print(f"[{settings.node_id}] Khởi động StorageEngine tại đường dẫn: {settings.db_path}...")
+    print(f"[{settings.node_id}] Starting StorageEngine at: {settings.db_path}...")
     engine = StorageEngine(
         db_path=settings.db_path,
         map_size=settings.map_size,
-        sync=True,  # Đảm bảo chuẩn Durability của ACID
+        sync=True,
     )
     yield
-    print(f"[{settings.node_id}] Nhận tín hiệu dừng, tiến hành flush và đóng StorageEngine...")
+    print(f"[{settings.node_id}] Closing StorageEngine...")
     if engine:
         engine.close()
 
 
 app = FastAPI(
-    title=f"Shard Node Service - {settings.node_id}",
+    title=f"HifeDB Shard Node - {settings.node_id}",
     version="1.0.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
 @app.get("/health", response_model=Dict[str, str])
 async def health_check():
-    """Endpoint cho Router Node kiểm tra trạng thái sống còn (Heartbeat)."""
+    """Endpoint kiểm tra trạng thái sống còn (Heartbeat)."""
     return {
         "status": "healthy",
         "node_id": settings.node_id,
@@ -138,30 +146,109 @@ async def scan_documents(collection: str, payload: ScanRequest):
     return results
 
 
+@app.post("/api/v1/{collection}/query", response_model=List[Dict[str, Any]])
+async def query_documents(collection: str, payload: Dict[str, Any]):
+    """Thực thi truy vấn JSON filter sử dụng QueryEngine (hỗ trợ $gt, $gte, $lt, $lte, $in, $ne, $regex, $exists)."""
+    coll = engine[collection]
+    query_engine = QueryEngine(coll)
+    # Hỗ trợ cả payload trực tiếp là query hoặc { "query": {...}, "limit": 100, "skip": 0 }
+    if "query" in payload and isinstance(payload["query"], dict):
+        query = payload["query"]
+        limit = payload.get("limit", 100)
+        skip = payload.get("skip", 0)
+    else:
+        query = payload
+        limit = 100
+        skip = 0
+    return query_engine.execute_find(query, limit=limit, skip=skip)
+
+
+@app.get("/api/v1/{collection}/indexes")
+async def get_collection_indexes(collection: str):
+    """Lấy danh sách các index của collection."""
+    coll = engine[collection]
+    return {
+        "success": True,
+        "collection": collection,
+        "indexes": coll.list_indexes(),
+        "node_id": settings.node_id,
+    }
+
+
+@app.post("/api/v1/{collection}/indexes", response_model=BaseResponse)
+async def create_collection_index(collection: str, payload: Dict[str, str]):
+    """Tạo index cho trường dữ liệu trên collection."""
+    field = payload.get("field")
+    if not field:
+        raise HTTPException(status_code=400, detail="Thiếu trường 'field' để tạo index.")
+    coll = engine[collection]
+    coll.create_index(field)
+    return BaseResponse(
+        success=True,
+        message=f"Đã tạo index cho trường '{field}' trên collection '{collection}' tại {settings.node_id}",
+    )
+
+
+@app.delete("/api/v1/{collection}/indexes/{field}", response_model=BaseResponse)
+async def drop_collection_index(collection: str, field: str):
+    """Xóa index của một trường."""
+    coll = engine[collection]
+    coll.drop_index(field)
+    return BaseResponse(
+        success=True,
+        message=f"Đã xóa index cho trường '{field}' trên collection '{collection}' tại {settings.node_id}",
+    )
+
+
+@app.delete("/api/v1/{collection}", response_model=BaseResponse)
+async def drop_collection(collection: str):
+    """Xóa toàn bộ collection và dữ liệu của nó khỏi shard."""
+    coll = engine[collection]
+    coll.drop()
+    return BaseResponse(
+        success=True,
+        message=f"Đã xóa toàn bộ collection '{collection}' trên {settings.node_id}",
+    )
+
+
+@app.get("/api/v1/collections")
+async def list_shard_collections():
+    """Lấy danh sách các collection hiện có trên shard."""
+    return {
+        "success": True,
+        "node_id": settings.node_id,
+        "collections": engine.list_collections(),
+    }
+
+
 @app.get("/stats", response_model=ShardStatsResponse)
 async def get_node_stats():
     """Báo cáo dung lượng, số entries và thống kê các collections."""
     raw_stats = engine.get_stats()
+    cols = engine.list_collections()
+    col_counts = {}
+    for c in cols:
+        col_counts[c] = engine[c].count()
+    if not col_counts:
+        col_counts["default"] = 0
+
     return ShardStatsResponse(
         node_id=settings.node_id,
         status="running",
         db_path=str(engine.db_path),
         entries_count=raw_stats["entries_count"],
         map_size_bytes=raw_stats["map_size_bytes"],
-        collections={
-            "users": engine["users"].count(),
-        },
+        collections=col_counts,
     )
 
 
 @app.post("/admin/snapshot", response_model=BaseResponse)
 async def create_local_snapshot():
-    """Tạo snapshot cục bộ của file LMDB phục vụ cho Task 4 (Cloud Backup)."""
+    """Tạo snapshot compact của file LMDB."""
     snapshot_dir = Path("./data/snapshots") / settings.node_id
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     target_file = snapshot_dir / "data.mdb"
 
-    # Sao chép snapshot an toàn của LMDB
     engine.env.copy(str(target_file), compact=True)
 
     return BaseResponse(

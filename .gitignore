@@ -1,0 +1,27 @@
+# Node
+node_modules/
+dist/
+.env.local
+npm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.pytest_cache/
+
+# HifeDB Local Data Files (LMDB 1GB pre-allocated virtual memory files)
+*.mdb
+*.lock
+data/
+backend/data/
+
+# Environment variables
+.env
+.DS_Store
+Thumbs.db

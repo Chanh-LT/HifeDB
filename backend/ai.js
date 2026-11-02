@@ -3,7 +3,9 @@ const { MongoClient } = require("mongodb");
 const { generateMongoQuery } = require("./aiQueryService");
 const router = express.Router();
 
-const client = new MongoClient(process.env.MONGODB_URI);
+const client = new MongoClient(process.env.MONGODB_URI || "mongodb://localhost:27017/shop_db", {
+  serverSelectionTimeoutMS: 2000
+});
 let clientPromise;
 
 function getClient() {
@@ -105,7 +107,9 @@ function validateSort(sort) {
 // POST /api/ai/generate
 router.post("/generate", async (req, res) => {
   try {
-    const { question, collection } = req.body;
+    const question = req.body.question || req.body.prompt;
+    const { collection } = req.body;
+    const dbName = req.body.database || process.env.MONGODB_DB_NAME || "shop_db";
 
     if (
       typeof question !== "string" ||
@@ -114,51 +118,33 @@ router.post("/generate", async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "Câu hỏi không hợp lệ hoặc quá dài.",
+        message: "Yêu cầu truy vấn (prompt/question) không hợp lệ hoặc quá dài.",
       });
     }
 
-    if (
-      typeof collection !== "string" ||
-      !/^[a-zA-Z0-9_-]{1,100}$/.test(collection)
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Tên collection không hợp lệ.",
-      });
+    let fields = ["_id", "name", "price", "category", "stock", "active"];
+
+    try {
+      const connectedClient = await getClient();
+      const db = connectedClient.db(dbName);
+
+      const collections = await db.listCollections(
+        { name: collection },
+        { nameOnly: true }
+      ).toArray();
+
+      if (collections.length > 0) {
+        const sample = await db.collection(collection).findOne(
+          {},
+          { projection: { _id: 0 } }
+        );
+        if (sample) {
+          fields = Object.keys(sample);
+        }
+      }
+    } catch (dbErr) {
+      console.warn("MongoDB chưa sẵn sàng để đọc schema động, dùng schema mặc định:", dbErr.message);
     }
-
-    const dbName = process.env.MONGODB_DB_NAME;
-
-    if (!dbName) {
-      throw new Error("Thiếu MONGODB_DB_NAME trong .env.");
-    }
-
-    const connectedClient = await getClient();
-    const db = connectedClient.db(dbName);
-
-    // Collection phải tồn tại trong database đã cấu hình.
-    const collections = await db.listCollections(
-      { name: collection },
-      { nameOnly: true }
-    ).toArray();
-
-    if (collections.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy collection.",
-      });
-    }
-
-    // Lấy một tài liệu mẫu để AI biết tên trường.
-    const sample = await db.collection(collection).findOne(
-      {},
-      { projection: { _id: 0 } }
-    );
-
-    const fields = sample
-      ? Object.keys(sample)
-      : [];
 
     const query = await generateMongoQuery({
       question: question.trim(),
@@ -259,8 +245,9 @@ router.post("/execute", async (req, res) => {
     validateProjection(projection);
     validateSort(sort);
 
+    const dbName = req.body.database || process.env.MONGODB_DB_NAME || "shop_db";
     const connectedClient = await getClient();
-    const db = connectedClient.db(process.env.MONGODB_DB_NAME);
+    const db = connectedClient.db(dbName);
 
     const collections = await db.listCollections(
       { name: collection },

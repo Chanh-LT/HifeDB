@@ -12,6 +12,7 @@ class ShardSettings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 
 settings = ShardSettings()
