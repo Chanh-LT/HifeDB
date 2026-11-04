@@ -507,14 +507,16 @@ async def _fetch_from_shard(shard_url: str, collection: str, limit: int) -> List
     """Gửi yêu cầu scan tài liệu tới một Shard."""
     url = f"{shard_url}/api/v1/{collection}/scan"
     try:
-        resp = await http_client.post(url, json={"limit": limit}, timeout=3.5)
+        resp = await http_client.post(url, json={"limit": limit}, timeout=8.0)
         if resp.status_code == 200:
             docs = resp.json()
             for d in docs:
                 d["_shard"] = shard_url
             return docs
+        print(f"[Router Warning] Shard {shard_url} scan error {resp.status_code}: {resp.text}")
         return []
-    except Exception:
+    except Exception as e:
+        print(f"[Router Warning] Không thể kết nối Shard {shard_url} scan: {e}")
         return []
 
 

@@ -11,10 +11,10 @@ volumes:
 
 services:
   # ============================================================================
-  # 1. CLOUD OBJECT STORAGE (MinIO - S3 Compatible)
+  # 1. CLOUD OBJECT STORAGE (MinIO S3 Compatible)
   # ============================================================================
   minio:
-    image: minio/minio:latest
+    image: cgr.dev/chainguard/minio:latest
     container_name: minio-s3
     restart: unless-stopped
     ports:
@@ -28,27 +28,6 @@ services:
       - minio_data:/data
     networks:
       - db-cluster-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  # Tạo tự động Bucket lưu snapshot ngay sau khi MinIO online
-  create-bucket:
-    image: minio/mc:latest
-    container_name: minio-init-bucket
-    depends_on:
-      minio:
-        condition: service_healthy
-    networks:
-      - db-cluster-net
-    entrypoint: >
-      /bin/sh -c "
-      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
-      /usr/bin/mc mb --ignore-existing myminio/database-backups;
-      exit 0;
-      "
 
   # ============================================================================
   # 2. SHARD NODES (Storage Workers)
@@ -70,13 +49,10 @@ services:
       S3_ACCESS_KEY: "minioadmin"
       S3_SECRET_KEY: "minioadmin"
       S3_BUCKET: "database-backups"
-      BACKUP_INTERVAL: "300"  # Tự động backup mỗi 5 phút (300s)
+      BACKUP_INTERVAL: "300"
     volumes:
       - shard1_data:/app/data/shard1_db
     command: python -m shard.server
-    depends_on:
-      minio:
-        condition: service_healthy
     networks:
       - db-cluster-net
     healthcheck:
@@ -106,9 +82,6 @@ services:
     volumes:
       - shard2_data:/app/data/shard2_db
     command: python -m shard.server
-    depends_on:
-      minio:
-        condition: service_healthy
     networks:
       - db-cluster-net
     healthcheck:

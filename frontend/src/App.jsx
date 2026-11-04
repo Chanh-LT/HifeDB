@@ -189,7 +189,9 @@ export default function App() {
     if (!col) return;
     setDocsLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/v1/${col}/documents?limit=100`);
+      const response = await fetch(`${API_BASE}/api/v1/${col}/documents?limit=100&_t=${Date.now()}`, {
+        cache: 'no-store'
+      });
       const data = await response.json();
       if (data.success && Array.isArray(data.documents)) {
         setDocs(data.documents);
@@ -350,11 +352,69 @@ export default function App() {
         throw new Error(data.detail || data.message || 'Lỗi ghi tài liệu');
       }
       notify(`Đã băm _id và ghi vào Shard: ${data.routed_shard || 'Cluster'}`);
-      fetchDocuments(selectedCollection);
-      fetchCollections(selectedDb);
+      
+      // Hiển thị ngay tài liệu vừa chèn trên giao diện lập tức
+      if (data.document) {
+        setDocs(prev => [data.document, ...prev.filter(d => d._id !== data.document._id)]);
+      }
+
+      await fetchDocuments(selectedCollection);
+      await fetchCollections(selectedDb);
+      await fetchDatabases();
       setModal('');
     } catch (err) {
       notify(err.message || 'Lỗi thêm tài liệu');
+    }
+  }
+
+  async function deleteDb(name) {
+    if (!window.confirm(`Bạn có chắc chắn muốn xóa database '${name}' và toàn bộ collections của nó không?`)) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/databases/${name}`, {
+        method: 'DELETE',
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || 'Lỗi xóa database');
+      }
+      notify(`Đã xóa database: ${name}`);
+      setDatabases(prev => prev.filter(d => d.name !== name));
+      if (selectedDb === name) {
+        const remaining = databases.filter(d => d.name !== name);
+        if (remaining.length > 0) {
+          setSelectedDb(remaining[0].name);
+        }
+      }
+      fetchDatabases();
+    } catch (err) {
+      notify(err.message || 'Lỗi xóa database');
+    }
+  }
+
+  async function deleteCollection(colName) {
+    if (!window.confirm(`Bạn có chắc chắn muốn xóa collection '${colName}' và toàn bộ tài liệu bên trong?`)) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/databases/${selectedDb}/collections/${colName}`, {
+        method: 'DELETE',
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || 'Lỗi xóa collection');
+      }
+      notify(`Đã xóa collection: ${colName}`);
+      setCollections(prev => prev.filter(c => c.name !== colName));
+      if (selectedCollection === colName) {
+        const remaining = collections.filter(c => c.name !== colName);
+        if (remaining.length > 0) {
+          setSelectedCollection(remaining[0].name);
+        } else {
+          setDocs([]);
+        }
+      }
+      fetchCollections(selectedDb);
+      fetchDatabases();
+    } catch (err) {
+      notify(err.message || 'Lỗi xóa collection');
     }
   }
 
@@ -371,6 +431,7 @@ export default function App() {
       notify(`Đã xóa thành công tài liệu: ${id}`);
       setDocs(prev => prev.filter(d => d._id !== id));
       fetchCollections(selectedDb);
+      fetchDatabases();
     } catch (err) {
       notify(err.message || 'Lỗi xóa document');
     }
@@ -740,9 +801,14 @@ export default function App() {
                         <td>{db.size}</td>
                         <td><Badge>{db.status}</Badge></td>
                         <td>
-                          <Button small variant="secondary" onClick={() => { setSelectedDb(db.name); setActive('Collections'); }}>
-                            Mở Collections <ChevronRight size={14} />
-                          </Button>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <Button small variant="secondary" onClick={() => { setSelectedDb(db.name); setActive('Collections'); }}>
+                              Mở Collections <ChevronRight size={14} />
+                            </Button>
+                            <Button small variant="danger" icon={Trash2} onClick={(e) => { e.stopPropagation(); deleteDb(db.name); }}>
+                              Xóa
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -796,7 +862,16 @@ export default function App() {
                           <td><strong>{c.documents}</strong> tài liệu</td>
                           <td>{c.size}</td>
                           <td>{c.updated}</td>
-                          <td><ChevronRight size={16} /></td>
+                          <td onClick={e => e.stopPropagation()}>
+                            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+                              <Button small variant="secondary" onClick={() => { setSelectedCollection(c.name); setActive('Documents'); }}>
+                                Mở <ChevronRight size={14} />
+                              </Button>
+                              <Button small variant="danger" icon={Trash2} onClick={() => deleteCollection(c.name)}>
+                                Xóa
+                              </Button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -815,6 +890,10 @@ export default function App() {
                 <button onClick={() => setActive('Collections')}>{selectedDb}</button>
                 <ChevronRight size={14} />
                 <strong>{selectedCollection}</strong>
+                <span className="crumb-spacer" />
+                <Button small variant="danger" icon={Trash2} onClick={() => { deleteCollection(selectedCollection); setActive('Collections'); }}>
+                  Xóa Collection này
+                </Button>
               </div>
 
               <section className="panel full-panel">
@@ -849,20 +928,22 @@ export default function App() {
                   <div className="document-list">
                     {filteredDocs.map(doc => (
                       <div className="document-row" key={doc._id}>
-                        <div className="document-title">
-                          <FileJson size={16} />
-                          <strong>_id: {doc._id}</strong>
-                          {doc._shard && (
-                            <span className="doc-type" style={{ background: '#dbeafe', color: '#1e40af' }}>
-                              {doc._shard.replace('http://127.0.0.1:', 'Shard ')}
-                            </span>
-                          )}
-                          <span className="doc-name">{doc.name || doc.title || ''}</span>
+                        <div className="document-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <FileJson size={16} />
+                            <strong>_id: {doc._id}</strong>
+                            {doc._shard && (
+                              <span className="doc-type" style={{ background: '#dbeafe', color: '#1e40af' }}>
+                                {doc._shard.replace('http://127.0.0.1:', 'Shard ').replace('http://shard-', 'Shard ')}
+                              </span>
+                            )}
+                            <span className="doc-name">{doc.name || doc.title || ''}</span>
+                          </div>
+                          <Button small variant="danger" icon={Trash2} onClick={() => deleteDoc(doc._id)}>
+                            Xóa Document
+                          </Button>
                         </div>
                         <pre>{JSON.stringify(doc, null, 2)}</pre>
-                        <button className="delete-doc" onClick={() => deleteDoc(doc._id)} title="Xóa document khỏi Shard">
-                          <Trash2 size={15} />
-                        </button>
                       </div>
                     ))}
                     {filteredDocs.length === 0 && (
