@@ -10,11 +10,15 @@ import uvicorn
 from shard.config import settings
 from shard.schemas import (
     BaseResponse,
+    BatchResponse,
+    DeleteManyRequest,
     InsertDocRequest,
     InsertDocResponse,
+    RenameCollectionRequest,
     ScanRequest,
     ShardStatsResponse,
     UpdateDocRequest,
+    UpdateManyRequest,
 )
 from storage.engine import StorageEngine
 from storage.query import QueryEngine
@@ -208,6 +212,59 @@ async def drop_collection(collection: str):
     return BaseResponse(
         success=True,
         message=f"Đã xóa toàn bộ collection '{collection}' trên {settings.node_id}",
+    )
+
+
+@app.post("/api/v1/{collection}/truncate", response_model=BaseResponse)
+async def truncate_collection(collection: str):
+    """Xóa toàn bộ tài liệu trong collection nhưng giữ lại collection."""
+    coll = engine[collection]
+    deleted_count = coll.truncate()
+    return BaseResponse(
+        success=True,
+        message=f"Đã làm rỗng collection '{collection}' ({deleted_count} tài liệu) trên {settings.node_id}",
+    )
+
+
+@app.post("/api/v1/{collection}/rename", response_model=BaseResponse)
+async def rename_collection(collection: str, payload: RenameCollectionRequest):
+    """Đổi tên collection trên shard."""
+    coll = engine[collection]
+    success = coll.rename(payload.new_name)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Không thể đổi tên collection '{collection}' thành '{payload.new_name}'",
+        )
+    return BaseResponse(
+        success=True,
+        message=f"Đã đổi tên collection '{collection}' thành '{payload.new_name}' trên {settings.node_id}",
+    )
+
+
+@app.post("/api/v1/{collection}/update-many", response_model=BatchResponse)
+async def update_many_documents(collection: str, payload: UpdateManyRequest):
+    """Cập nhật hàng loạt tài liệu theo bộ lọc."""
+    coll = engine[collection]
+    modified = coll.update_many(payload.filter, payload.update_fields)
+    return BatchResponse(
+        success=True,
+        matched_count=modified,
+        modified_count=modified,
+        node_id=settings.node_id,
+    )
+
+
+@app.post("/api/v1/{collection}/delete-many", response_model=BatchResponse)
+async def delete_many_documents(collection: str, payload: DeleteManyRequest):
+    """Xóa hàng loạt tài liệu theo bộ lọc."""
+    coll = engine[collection]
+    deleted = coll.delete_many(payload.filter)
+    return BatchResponse(
+        success=True,
+        matched_count=deleted,
+        deleted_count=deleted,
+        node_id=settings.node_id,
     )
 
 

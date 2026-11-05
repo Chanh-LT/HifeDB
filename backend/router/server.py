@@ -319,6 +319,26 @@ async def delete_database(name: str):
     return {"success": True, "message": f"Đã xóa database '{name}' thành công."}
 
 
+@app.put("/api/databases/{name}/rename")
+async def rename_database(name: str, payload: Dict[str, str]):
+    """Đổi tên database trong cluster."""
+    new_name = payload.get("newName", "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Tên database mới không hợp lệ.")
+    if name not in databases_meta:
+        raise HTTPException(status_code=404, detail=f"Database '{name}' không tồn tại.")
+    if new_name in databases_meta:
+        raise HTTPException(status_code=400, detail=f"Database '{new_name}' đã tồn tại.")
+
+    databases_meta[new_name] = databases_meta.pop(name)
+    save_databases_meta(databases_meta)
+    return {
+        "success": True,
+        "message": f"Đã đổi tên database '{name}' thành '{new_name}'.",
+        "database": new_name,
+    }
+
+
 @app.get("/api/databases/{name}/collections")
 async def list_collections(name: str):
     """Lấy danh sách collections trong database cùng số lượng document thực tế."""
@@ -392,6 +412,57 @@ async def delete_collection(name: str, col: str):
             pass
 
     return {"success": True, "message": f"Đã xóa collection '{col}' thành công."}
+
+
+@app.put("/api/databases/{name}/collections/{col}/rename")
+async def rename_collection(name: str, col: str, payload: Dict[str, str]):
+    """Đổi tên collection trên toàn cụm Shards và cập nhật metadata."""
+    new_name = payload.get("newName", "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Tên collection mới không hợp lệ.")
+    if name not in databases_meta or col not in databases_meta[name]:
+        raise HTTPException(status_code=404, detail=f"Collection '{col}' không tồn tại trong database '{name}'.")
+    if new_name in databases_meta[name]:
+        raise HTTPException(status_code=400, detail=f"Collection '{new_name}' đã tồn tại trong database '{name}'.")
+
+    shards = hash_ring.get_all_nodes()
+    for s in shards:
+        try:
+            await http_client.post(
+                f"{s}/api/v1/{col}/rename",
+                json={"new_name": new_name},
+                timeout=5.0
+            )
+        except Exception as e:
+            print(f"[Router Warning] Lỗi rename collection tại shard {s}: {e}")
+
+    idx = databases_meta[name].index(col)
+    databases_meta[name][idx] = new_name
+    save_databases_meta(databases_meta)
+    return {
+        "success": True,
+        "message": f"Đã đổi tên collection '{col}' thành '{new_name}'.",
+        "collection": new_name,
+    }
+
+
+@app.post("/api/databases/{name}/collections/{col}/truncate")
+@app.post("/api/v1/{col}/truncate")
+async def truncate_collection(col: str, name: Optional[str] = None):
+    """Làm rỗng collection trên toàn cụm Shards (giữ nguyên cấu trúc collection)."""
+    shards = hash_ring.get_all_nodes()
+    total_shards = len(shards)
+    for s in shards:
+        try:
+            await http_client.post(f"{s}/api/v1/{col}/truncate", timeout=5.0)
+        except Exception as e:
+            print(f"[Router Warning] Lỗi truncate collection tại shard {s}: {e}")
+
+    return {
+        "success": True,
+        "message": f"Đã làm rỗng toàn bộ dữ liệu trong collection '{col}' trên {total_shards} shards.",
+        "collection": col,
+    }
 
 
 # ============================================================================
@@ -597,6 +668,75 @@ async def query_cluster(collection: str, payload: Dict[str, Any]):
         merged.extend(docs)
 
     return merged
+
+
+@app.post("/api/v1/{collection}/update-many")
+async def update_many_cluster(collection: str, payload: Dict[str, Any]):
+    """Phát tán lệnh cập nhật hàng loạt đến TẤT CẢ các Shard Node trong cụm."""
+    shards = hash_ring.get_all_nodes()
+    if not shards:
+        return {"success": False, "message": "Không có Shard nào khả dụng.", "modified_count": 0}
+
+    filter_query = payload.get("filter", {})
+    update_fields = payload.get("update_fields", {})
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="Thiếu trường 'update_fields' để cập nhật.")
+
+    async def update_shard(shard_url: str):
+        try:
+            resp = await http_client.post(
+                f"{shard_url}/api/v1/{collection}/update-many",
+                json={"filter": filter_query, "update_fields": update_fields},
+                timeout=8.0,
+            )
+            if resp.status_code == 200:
+                return resp.json().get("modified_count", 0)
+            return 0
+        except Exception as e:
+            print(f"[Router Warning] Lỗi update-many tại {shard_url}: {e}")
+            return 0
+
+    results = await asyncio.gather(*(update_shard(s) for s in shards))
+    total_modified = sum(results)
+
+    return {
+        "success": True,
+        "message": f"Đã cập nhật thành công {total_modified} tài liệu trên cụm {len(shards)} Shards.",
+        "modified_count": total_modified,
+    }
+
+
+@app.post("/api/v1/{collection}/delete-many")
+async def delete_many_cluster(collection: str, payload: Dict[str, Any]):
+    """Phát tán lệnh xóa hàng loạt theo điều kiện đến TẤT CẢ các Shard Node trong cụm."""
+    shards = hash_ring.get_all_nodes()
+    if not shards:
+        return {"success": False, "message": "Không có Shard nào khả dụng.", "deleted_count": 0}
+
+    filter_query = payload.get("filter", {})
+
+    async def delete_shard(shard_url: str):
+        try:
+            resp = await http_client.post(
+                f"{shard_url}/api/v1/{collection}/delete-many",
+                json={"filter": filter_query},
+                timeout=8.0,
+            )
+            if resp.status_code == 200:
+                return resp.json().get("deleted_count", 0)
+            return 0
+        except Exception as e:
+            print(f"[Router Warning] Lỗi delete-many tại {shard_url}: {e}")
+            return 0
+
+    results = await asyncio.gather(*(delete_shard(s) for s in shards))
+    total_deleted = sum(results)
+
+    return {
+        "success": True,
+        "message": f"Đã xóa thành công {total_deleted} tài liệu trên cụm {len(shards)} Shards.",
+        "deleted_count": total_deleted,
+    }
 
 
 # ============================================================================

@@ -159,6 +159,112 @@ class Collection:
         self.indexes.indexed_fields.clear()
         return True
 
+    def truncate(self) -> int:
+        """Xóa toàn bộ documents trong collection nhưng giữ lại định nghĩa collection."""
+        if not self.engine.is_open():
+            raise RuntimeError("Database chưa được mở hoặc đã đóng.")
+
+        prefix_doc = f"doc:{self.name}:".encode("utf-8")
+        prefix_idx = f"idx:{self.name}:".encode("utf-8")
+        count = 0
+
+        with self.engine.env.begin(write=True) as txn:
+            cursor = txn.cursor()
+            to_del = []
+            if cursor.set_range(prefix_doc):
+                for k, _ in cursor:
+                    if not k.startswith(prefix_doc):
+                        break
+                    to_del.append(k)
+            count = len(to_del)
+            if cursor.set_range(prefix_idx):
+                for k, _ in cursor:
+                    if not k.startswith(prefix_idx):
+                        break
+                    to_del.append(k)
+
+            for k in to_del:
+                txn.delete(k)
+
+        return count
+
+    def rename(self, new_name: str) -> bool:
+        """Đổi tên collection và di chuyển toàn bộ documents và indexes."""
+        if not self.engine.is_open():
+            raise RuntimeError("Database chưa được mở hoặc đã đóng.")
+        if not new_name or new_name == self.name:
+            return False
+
+        old_prefix_doc = f"doc:{self.name}:".encode("utf-8")
+        new_prefix_doc = f"doc:{new_name}:".encode("utf-8")
+        old_prefix_idx = f"idx:{self.name}:".encode("utf-8")
+        new_prefix_idx = f"idx:{new_name}:".encode("utf-8")
+
+        with self.engine.env.begin(write=True) as txn:
+            cursor = txn.cursor()
+            # Di chuyển docs
+            doc_moves = []
+            if cursor.set_range(old_prefix_doc):
+                for k, v in cursor:
+                    if not k.startswith(old_prefix_doc):
+                        break
+                    suffix = k[len(old_prefix_doc):]
+                    doc_moves.append((k, new_prefix_doc + suffix, v))
+
+            # Di chuyển indexes
+            idx_moves = []
+            if cursor.set_range(old_prefix_idx):
+                for k, v in cursor:
+                    if not k.startswith(old_prefix_idx):
+                        break
+                    suffix = k[len(old_prefix_idx):]
+                    idx_moves.append((k, new_prefix_idx + suffix, v))
+
+            # Thực hiện ghi mới và xóa cũ
+            for old_k, new_k, v in doc_moves:
+                txn.put(new_k, v)
+                txn.delete(old_k)
+
+            for old_k, new_k, v in idx_moves:
+                txn.put(new_k, v)
+                txn.delete(old_k)
+
+            # Di chuyển metadata index
+            old_meta_k = self.indexes._meta_key()
+            meta_val = txn.get(old_meta_k)
+            if meta_val:
+                new_indexes = IndexManager(Collection(self.engine, new_name))
+                txn.put(new_indexes._meta_key(), meta_val)
+                txn.delete(old_meta_k)
+
+        self.name = new_name
+        self.indexes = IndexManager(self)
+        return True
+
+    def update_many(self, filter_query: Dict[str, Any], update_fields: Dict[str, Any]) -> int:
+        """Cập nhật hàng loạt các documents khớp với bộ lọc."""
+        from storage.query import QueryEngine
+        qe = QueryEngine(self)
+        matched_docs = qe.execute_find(filter_query, limit=10000)
+        modified_count = 0
+        for doc in matched_docs:
+            doc_id = doc.get("_id")
+            if doc_id and self.update_by_id(str(doc_id), update_fields):
+                modified_count += 1
+        return modified_count
+
+    def delete_many(self, filter_query: Dict[str, Any]) -> int:
+        """Xóa hàng loạt các documents khớp với bộ lọc."""
+        from storage.query import QueryEngine
+        qe = QueryEngine(self)
+        matched_docs = qe.execute_find(filter_query, limit=10000)
+        deleted_count = 0
+        for doc in matched_docs:
+            doc_id = doc.get("_id")
+            if doc_id and self.delete_by_id(str(doc_id)):
+                deleted_count += 1
+        return deleted_count
+
 
 class StorageEngine:
     """Quản lý môi trường LMDB, cấu hình thư mục lưu trữ và cấp phát bộ nhớ."""

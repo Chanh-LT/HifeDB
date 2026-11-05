@@ -33,3 +33,24 @@ class ShardStatsResponse(BaseModel):
     entries_count: int
     map_size_bytes: int
     collections: Dict[str, int]
+
+
+class RenameCollectionRequest(BaseModel):
+    new_name: str = Field(..., description="Tên mới của collection")
+
+
+class UpdateManyRequest(BaseModel):
+    filter: Dict[str, Any] = Field(default_factory=dict, description="Bộ lọc tài liệu cần cập nhật")
+    update_fields: Dict[str, Any] = Field(..., description="Các trường dữ liệu cần cập nhật")
+
+
+class DeleteManyRequest(BaseModel):
+    filter: Dict[str, Any] = Field(default_factory=dict, description="Bộ lọc tài liệu cần xóa")
+
+
+class BatchResponse(BaseModel):
+    success: bool
+    matched_count: int = 0
+    modified_count: int = 0
+    deleted_count: int = 0
+    node_id: str = ""

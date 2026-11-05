@@ -5,7 +5,7 @@ import {
   ChevronLeft, ChevronRight, CircleHelp, Code2, Command, Copy, Database,
   FileJson, Files, Gauge, HardDrive, LayoutDashboard, ListFilter, LogOut,
   MoreHorizontal, Plus, Search, Settings, ShieldCheck, Sparkles, Terminal,
-  Trash2, X, Zap, RefreshCw, Cpu, Layers, Server, Network
+  Trash2, X, Zap, RefreshCw, Cpu, Layers, Server, Network, Edit3, Eraser
 } from 'lucide-react';
 
 const initialDbs = [
@@ -129,6 +129,21 @@ export default function App() {
   // Hash Ring tester
   const [testKey, setTestKey] = useState('product_xyz');
   const [testNodeResult, setTestNodeResult] = useState(null);
+
+  // Rename DB & Collection state
+  const [renameDbTarget, setRenameDbTarget] = useState('');
+  const [renameDbNewName, setRenameDbNewName] = useState('');
+  const [renameColTarget, setRenameColTarget] = useState('');
+  const [renameColNewName, setRenameColNewName] = useState('');
+
+  // Edit Document state
+  const [editingDoc, setEditingDoc] = useState(null);
+  const [editDocJson, setEditDocJson] = useState('{}');
+
+  // Update Many & Delete Many state
+  const [updateManyFilter, setUpdateManyFilter] = useState('{\n  "category": "laptop"\n}');
+  const [updateManyFields, setUpdateManyFields] = useState('{\n  "stock": 15\n}');
+  const [deleteManyFilter, setDeleteManyFilter] = useState('{\n  "stock": 0\n}');
 
   function notify(message) {
     setToast(message);
@@ -434,6 +449,192 @@ export default function App() {
       fetchDatabases();
     } catch (err) {
       notify(err.message || 'Lỗi xóa document');
+    }
+  }
+
+  async function renameDbSubmit(e) {
+    e.preventDefault();
+    const newName = renameDbNewName.trim();
+    if (!newName || newName === renameDbTarget) {
+      setModal('');
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE}/api/databases/${renameDbTarget}/rename`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newName }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.detail || data.message || 'Lỗi đổi tên database.');
+      }
+      notify(`Đã đổi tên database '${renameDbTarget}' thành '${newName}'`);
+      if (selectedDb === renameDbTarget) {
+        setSelectedDb(newName);
+      }
+      await fetchDatabases();
+      setModal('');
+    } catch (err) {
+      notify(err.message || 'Lỗi đổi tên database.');
+    }
+  }
+
+  async function renameCollectionSubmit(e) {
+    e.preventDefault();
+    const newName = renameColNewName.trim();
+    if (!newName || newName === renameColTarget) {
+      setModal('');
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE}/api/databases/${selectedDb}/collections/${renameColTarget}/rename`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newName }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.detail || data.message || 'Lỗi đổi tên collection.');
+      }
+      notify(`Đã đổi tên collection '${renameColTarget}' thành '${newName}'`);
+      if (selectedCollection === renameColTarget) {
+        setSelectedCollection(newName);
+      }
+      await fetchCollections(selectedDb);
+      setModal('');
+    } catch (err) {
+      notify(err.message || 'Lỗi đổi tên collection.');
+    }
+  }
+
+  async function truncateCol(colName) {
+    if (!window.confirm(`Bạn có chắc chắn muốn làm rỗng (TRUNCATE) collection '${colName}' không? Toàn bộ tài liệu sẽ bị xóa sạch, cấu trúc bảng được giữ nguyên.`)) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/databases/${selectedDb}/collections/${colName}/truncate`, {
+        method: 'POST',
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.detail || data.message || 'Lỗi làm rỗng collection.');
+      }
+      notify(`Đã làm rỗng collection '${colName}' thành công!`);
+      if (selectedCollection === colName) {
+        setDocs([]);
+      }
+      await fetchCollections(selectedDb);
+      await fetchDatabases();
+    } catch (err) {
+      notify(err.message || 'Lỗi làm rỗng collection.');
+    }
+  }
+
+  function openEditDocModal(doc) {
+    const docCopy = { ...doc };
+    delete docCopy._shard;
+    setEditingDoc(doc);
+    setEditDocJson(JSON.stringify(docCopy, null, 2));
+    setModal('editDoc');
+  }
+
+  async function updateDocSubmit(e) {
+    e.preventDefault();
+    if (!editingDoc) return;
+    let parsed;
+    try {
+      parsed = JSON.parse(editDocJson);
+    } catch {
+      notify('JSON không hợp lệ! Vui lòng kiểm tra cú pháp.');
+      return;
+    }
+    const docId = editingDoc._id;
+    const updateFields = { ...parsed };
+    delete updateFields._id;
+    delete updateFields._shard;
+
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/${selectedCollection}/${docId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ update_fields: updateFields }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.detail || data.message || 'Lỗi cập nhật tài liệu.');
+      }
+      notify(`Đã cập nhật document '${docId}' thành công!`);
+      setDocs(prev => prev.map(d => (d._id === docId ? { ...d, ...updateFields } : d)));
+      setModal('');
+      await fetchDocuments(selectedCollection);
+    } catch (err) {
+      notify(err.message || 'Lỗi cập nhật document.');
+    }
+  }
+
+  async function updateManySubmit(e) {
+    e.preventDefault();
+    let parsedFilter, parsedFields;
+    try {
+      parsedFilter = JSON.parse(updateManyFilter || '{}');
+    } catch {
+      notify('Bộ lọc JSON không hợp lệ!');
+      return;
+    }
+    try {
+      parsedFields = JSON.parse(updateManyFields);
+    } catch {
+      notify('Trường cập nhật JSON không hợp lệ!');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/${selectedCollection}/update-many`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filter: parsedFilter, update_fields: parsedFields }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.detail || data.message || 'Lỗi cập nhật hàng loạt.');
+      }
+      notify(`Đã cập nhật ${data.modified_count} tài liệu trên cụm Shards!`);
+      setModal('');
+      await fetchDocuments(selectedCollection);
+      await fetchCollections(selectedDb);
+      await fetchDatabases();
+    } catch (err) {
+      notify(err.message || 'Lỗi cập nhật hàng loạt.');
+    }
+  }
+
+  async function deleteManySubmit(e) {
+    e.preventDefault();
+    let parsedFilter;
+    try {
+      parsedFilter = JSON.parse(deleteManyFilter);
+    } catch {
+      notify('Bộ lọc JSON không hợp lệ!');
+      return;
+    }
+    if (!window.confirm(`Bạn có chắc chắn muốn xóa hàng loạt các tài liệu khớp bộ lọc khỏi '${selectedCollection}' không? Hành động này không thể hoàn tác.`)) return;
+
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/${selectedCollection}/delete-many`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filter: parsedFilter }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.detail || data.message || 'Lỗi xóa hàng loạt.');
+      }
+      notify(`Đã xóa ${data.deleted_count} tài liệu trên cụm Shards!`);
+      setModal('');
+      await fetchDocuments(selectedCollection);
+      await fetchCollections(selectedDb);
+      await fetchDatabases();
+    } catch (err) {
+      notify(err.message || 'Lỗi xóa hàng loạt.');
     }
   }
 
@@ -801,9 +1002,12 @@ export default function App() {
                         <td>{db.size}</td>
                         <td><Badge>{db.status}</Badge></td>
                         <td>
-                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                             <Button small variant="secondary" onClick={() => { setSelectedDb(db.name); setActive('Collections'); }}>
                               Mở Collections <ChevronRight size={14} />
+                            </Button>
+                            <Button small variant="secondary" icon={Edit3} onClick={(e) => { e.stopPropagation(); setRenameDbTarget(db.name); setRenameDbNewName(db.name); setModal('renameDb'); }}>
+                              Đổi tên
                             </Button>
                             <Button small variant="danger" icon={Trash2} onClick={(e) => { e.stopPropagation(); deleteDb(db.name); }}>
                               Xóa
@@ -863,9 +1067,15 @@ export default function App() {
                           <td>{c.size}</td>
                           <td>{c.updated}</td>
                           <td onClick={e => e.stopPropagation()}>
-                            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
                               <Button small variant="secondary" onClick={() => { setSelectedCollection(c.name); setActive('Documents'); }}>
                                 Mở <ChevronRight size={14} />
+                              </Button>
+                              <Button small variant="secondary" icon={Edit3} onClick={() => { setRenameColTarget(c.name); setRenameColNewName(c.name); setModal('renameCol'); }}>
+                                Đổi tên
+                              </Button>
+                              <Button small variant="secondary" icon={Eraser} onClick={() => truncateCol(c.name)}>
+                                Làm rỗng
                               </Button>
                               <Button small variant="danger" icon={Trash2} onClick={() => deleteCollection(c.name)}>
                                 Xóa
@@ -891,6 +1101,9 @@ export default function App() {
                 <ChevronRight size={14} />
                 <strong>{selectedCollection}</strong>
                 <span className="crumb-spacer" />
+                <Button small variant="secondary" icon={Eraser} onClick={() => truncateCol(selectedCollection)}>
+                  Làm rỗng bảng (Truncate)
+                </Button>
                 <Button small variant="danger" icon={Trash2} onClick={() => { deleteCollection(selectedCollection); setActive('Collections'); }}>
                   Xóa Collection này
                 </Button>
@@ -912,14 +1125,22 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="toolbar">
+                <div className="toolbar" style={{ flexWrap: 'wrap', gap: 10 }}>
                   <div className="search-box wide-search">
                     <Search size={16} />
                     <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Lọc document theo bất kỳ trường nào..." />
                   </div>
-                  <Button variant="secondary" icon={Code2} onClick={() => setActive('Query Editor')}>
-                    Mở Query Editor
-                  </Button>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <Button variant="secondary" icon={Edit3} onClick={() => setModal('updateMany')}>
+                      Update Many
+                    </Button>
+                    <Button variant="danger" icon={Trash2} onClick={() => setModal('deleteMany')}>
+                      Delete Many
+                    </Button>
+                    <Button variant="secondary" icon={Code2} onClick={() => setActive('Query Editor')}>
+                      Mở Query Editor
+                    </Button>
+                  </div>
                 </div>
 
                 {docsLoading ? (
@@ -928,8 +1149,8 @@ export default function App() {
                   <div className="document-list">
                     {filteredDocs.map(doc => (
                       <div className="document-row" key={doc._id}>
-                        <div className="document-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div className="document-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                             <FileJson size={16} />
                             <strong>_id: {doc._id}</strong>
                             {doc._shard && (
@@ -939,9 +1160,14 @@ export default function App() {
                             )}
                             <span className="doc-name">{doc.name || doc.title || ''}</span>
                           </div>
-                          <Button small variant="danger" icon={Trash2} onClick={() => deleteDoc(doc._id)}>
-                            Xóa Document
-                          </Button>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                            <Button small variant="secondary" icon={Edit3} onClick={() => openEditDocModal(doc)}>
+                              Sửa Document
+                            </Button>
+                            <Button small variant="danger" icon={Trash2} onClick={() => deleteDoc(doc._id)}>
+                              Xóa
+                            </Button>
+                          </div>
                         </div>
                         <pre>{JSON.stringify(doc, null, 2)}</pre>
                       </div>
@@ -1313,6 +1539,128 @@ export default function App() {
             <div className="modal-actions">
               <Button type="button" variant="secondary" onClick={() => setModal('')}>Hủy</Button>
               <Button type="submit">Tạo Index trên Shards</Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* MODAL RENAME DATABASE */}
+      {modal === 'renameDb' && (
+        <Modal title={`Đổi Tên Database "${renameDbTarget}"`} onClose={() => setModal('')}>
+          <form onSubmit={renameDbSubmit} className="modal-form">
+            <p className="modal-desc">Nhập tên mới cho database <b>{renameDbTarget}</b>.</p>
+            <label htmlFor="renameDbInput">Tên Database Mới</label>
+            <input
+              id="renameDbInput"
+              value={renameDbNewName}
+              onChange={e => setRenameDbNewName(e.target.value)}
+              placeholder="ví dụ: production_db"
+              required
+              autoFocus
+            />
+            <div className="modal-actions">
+              <Button type="button" variant="secondary" onClick={() => setModal('')}>Hủy</Button>
+              <Button type="submit">Đổi Tên</Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* MODAL RENAME COLLECTION */}
+      {modal === 'renameCol' && (
+        <Modal title={`Đổi Tên Collection "${renameColTarget}"`} onClose={() => setModal('')}>
+          <form onSubmit={renameCollectionSubmit} className="modal-form">
+            <p className="modal-desc">Nhập tên mới cho collection trong <b>{selectedDb}</b>. Toàn bộ tài liệu và chỉ mục sẽ được di chuyển tự động.</p>
+            <label htmlFor="renameColInput">Tên Collection Mới</label>
+            <input
+              id="renameColInput"
+              value={renameColNewName}
+              onChange={e => setRenameColNewName(e.target.value)}
+              placeholder="ví dụ: new_products"
+              required
+              autoFocus
+            />
+            <div className="modal-actions">
+              <Button type="button" variant="secondary" onClick={() => setModal('')}>Hủy</Button>
+              <Button type="submit">Đổi Tên</Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* MODAL EDIT DOCUMENT */}
+      {modal === 'editDoc' && editingDoc && (
+        <Modal title={`Chỉnh Sửa Document (_id: ${editingDoc._id})`} onClose={() => setModal('')}>
+          <form onSubmit={updateDocSubmit} className="modal-form">
+            <p className="modal-desc">Chỉnh sửa nội dung JSON của tài liệu. Khóa <code>_id</code> là bất biến (immutable) và sẽ được giữ nguyên.</p>
+            <label>Nội dung JSON:</label>
+            <textarea
+              value={editDocJson}
+              onChange={e => setEditDocJson(e.target.value)}
+              rows={10}
+              style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontFamily: 'monospace', fontSize: 13 }}
+              required
+            />
+            <div className="modal-actions">
+              <Button type="button" variant="secondary" onClick={() => setModal('')}>Hủy</Button>
+              <Button type="submit">Lưu Thay Đổi</Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* MODAL UPDATE MANY */}
+      {modal === 'updateMany' && (
+        <Modal title={`Cập Nhật Hàng Loạt (Update Many) - ${selectedCollection}`} onClose={() => setModal('')}>
+          <form onSubmit={updateManySubmit} className="modal-form">
+            <p className="modal-desc">
+              Phát tán lệnh cập nhật đến <b>TẤT CẢ Shards</b>. Toàn bộ tài liệu khớp với bộ lọc JSON sẽ được cập nhật đồng thời.
+            </p>
+            <label>1. Bộ lọc tìm kiếm JSON (Filter):</label>
+            <textarea
+              value={updateManyFilter}
+              onChange={e => setUpdateManyFilter(e.target.value)}
+              rows={4}
+              style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontFamily: 'monospace', fontSize: 13 }}
+              placeholder='{\n  "category": "laptop"\n}'
+              required
+            />
+            <label style={{ marginTop: 6 }}>2. Các trường cần cập nhật (Update Fields):</label>
+            <textarea
+              value={updateManyFields}
+              onChange={e => setUpdateManyFields(e.target.value)}
+              rows={4}
+              style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontFamily: 'monospace', fontSize: 13 }}
+              placeholder='{\n  "stock": 20,\n  "discount": true\n}'
+              required
+            />
+            <div className="modal-actions">
+              <Button type="button" variant="secondary" onClick={() => setModal('')}>Hủy</Button>
+              <Button type="submit">Thực Thi Update Many</Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* MODAL DELETE MANY */}
+      {modal === 'deleteMany' && (
+        <Modal title={`Xóa Hàng Loạt (Delete Many) - ${selectedCollection}`} onClose={() => setModal('')}>
+          <form onSubmit={deleteManySubmit} className="modal-form">
+            <p className="modal-desc" style={{ color: '#dc2626' }}>
+              Cảnh báo: Lệnh này sẽ xóa vĩnh viễn tất cả các tài liệu trên toàn cụm Shards khớp với điều kiện bên dưới!
+            </p>
+            <label>Bộ lọc tìm kiếm JSON (Filter để xóa):</label>
+            <textarea
+              value={deleteManyFilter}
+              onChange={e => setDeleteManyFilter(e.target.value)}
+              rows={5}
+              style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid #fca5a5', fontFamily: 'monospace', fontSize: 13 }}
+              placeholder='{\n  "stock": 0\n}'
+              required
+            />
+            <div className="modal-actions">
+              <Button type="button" variant="secondary" onClick={() => setModal('')}>Hủy</Button>
+              <Button type="submit" variant="danger">Thực Thi Delete Many</Button>
             </div>
           </form>
         </Modal>
